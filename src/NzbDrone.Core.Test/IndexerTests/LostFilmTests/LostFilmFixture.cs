@@ -16,6 +16,7 @@ using NzbDrone.Core.Indexers.Definitions.Cardigann;
 using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.Test.Framework;
+using NzbDrone.Test.Common;
 
 namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
 {
@@ -532,7 +533,7 @@ namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
             const string decoySeriesJson = "{\"data\":{\"series\":[" +
                 "{\"id\":\"1\",\"title\":\"4400\",\"title_orig\":\"The 4400\",\"link\":\"/series/The_4400\"}," +
                 "{\"id\":\"2\",\"title\":\"Сотня\",\"title_orig\":\"The 100\",\"link\":\"/series/The_100\"}," +
-                "{\"id\":\"3\",\"title\":\"Офис\",\"title_orig\":\"The Office\",\"link\":\"/series/The_Office\"}]," +
+                "{\"id\":\"3\",\"title\":\"Офис\",\"title_orig\":\"The Office\",\"link\":\"/series/The_Office\"}]}," +
                 "\"result\":\"ok\"}";
 
             var client = Mocker.GetMock<IIndexerHttpClient>();
@@ -795,6 +796,8 @@ namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
             client.Verify(
                 o => o.ExecuteProxiedAsync(It.Is<HttpRequest>(v => v.Url.Host == "evil.example.com"), Subject.Definition),
                 Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
@@ -831,6 +834,8 @@ namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
                     It.Is<HttpRequest>(v => v.Method == HttpMethod.Post && v.Url.Path == "/ajaxik.php"),
                     Subject.Definition),
                 Times.Once());
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
@@ -847,6 +852,8 @@ namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
             result.IsValid.Should().BeFalse();
             result.Errors.Should().ContainSingle(e => e.ErrorMessage.Contains("Captcha is incorrect"));
             ((LostFilmSettings)Subject.Definition.Settings).Captcha.Should().BeNull();
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
