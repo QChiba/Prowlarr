@@ -640,6 +640,22 @@ namespace NzbDrone.Core.Indexers.Definitions
                             _workingMirror = mirror;
                         }
 
+                        // The probe went out without the session, so a page that needs a login
+                        // comes back as the guest version. The mirror is one of our own
+                        // IndexerUrls and is reachable: replay the request once with the session
+                        // (the LostFilm session cookie is accepted across mirrors) instead of
+                        // letting the guest page trigger a re-login, which would resubmit the
+                        // already-used captcha and fail with "Captcha is incorrect".
+                        if (CheckIfLoginNeeded(mirrorResponse) && HasSession(request))
+                        {
+                            var replayed = await TryReplayWithSession(request, mirror);
+
+                            if (replayed != null)
+                            {
+                                return replayed.Value;
+                            }
+                        }
+
                         return (mirrorResponse, mirrorRequest);
                     }
                 }
@@ -647,6 +663,28 @@ namespace NzbDrone.Core.Indexers.Definitions
                 {
                     _logger.Debug("LostFilm.tv: mirror {0} failed: {1}", mirror, ex.Message);
                 }
+            }
+
+            return null;
+        }
+
+        private async Task<(HttpResponse Response, HttpRequest Request)?> TryReplayWithSession(HttpRequest request, string mirror)
+        {
+            try
+            {
+                var sessionRequest = CloneForMirror(request, mirror);
+                var sessionResponse = await ExecuteAsync(sessionRequest);
+
+                if (!IsGeoBlocked(sessionResponse))
+                {
+                    return (sessionResponse, sessionRequest);
+                }
+            }
+            catch (Exception ex) when (IsMirrorFailoverException(ex))
+            {
+                // Keep the mirror that just answered the probe instead of moving on to the next
+                // one; the guest page then takes the normal re-login path.
+                _logger.Debug("LostFilm.tv: replaying the request with the session on {0} failed: {1}", mirror, ex.Message);
             }
 
             return null;
@@ -674,6 +712,11 @@ namespace NzbDrone.Core.Indexers.Definitions
             }
 
             return candidates;
+        }
+
+        private static bool HasSession(HttpRequest request)
+        {
+            return request.Cookies.TryGetValue("lf_session", out var session) && session.IsNotNullOrWhiteSpace();
         }
 
         private static HttpRequest CloneForMirror(HttpRequest request, string mirrorBaseUrl)
