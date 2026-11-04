@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net;
@@ -393,20 +394,25 @@ namespace NzbDrone.Core.Indexers.Definitions
             var urlQuery = HttpUtility.ParseQueryString(request.HttpRequest.Url.Query);
             var isRss = request.HttpRequest.Url.Path.Equals("/new", StringComparison.OrdinalIgnoreCase);
 
-            IList<ReleaseInfo> releases;
+            var stopwatch = Stopwatch.StartNew();
 
-            if (isRss)
-            {
-                releases = await FetchNewReleases();
-            }
-            else
-            {
-                releases = await PerformSearch(urlQuery["val"], urlQuery["season"].ParseInt32(), urlQuery["episode"]);
-            }
+            var (releases, response) = isRss
+                ? await FetchNewReleases()
+                : await PerformSearch(urlQuery["val"], urlQuery["season"].ParseInt32(), urlQuery["episode"]);
+
+            stopwatch.Stop();
 
             return new IndexerQueryResult
             {
-                Releases = releases
+                Releases = releases,
+
+                // History and the indexer stats count a query as successful only when it carries an
+                // HTTP 200 response, and take its time from that response. A LostFilm query is several
+                // requests, so report the first one (the search or the feed page) with the time of
+                // the whole query; without it every LostFilm query was recorded as failed.
+                Response = response == null
+                    ? null
+                    : new HttpResponse(response.Request, response.Headers, response.Cookies, response.ResponseData, stopwatch.ElapsedMilliseconds, response.StatusCode, response.Version)
             };
         }
 
@@ -865,7 +871,7 @@ namespace NzbDrone.Core.Indexers.Definitions
             return informativeTokens.Sum(token => haystacks.Any(h => h.Contains(token, StringComparison.Ordinal)) ? 1 : 0);
         }
 
-        private async Task<IList<ReleaseInfo>> PerformSearch(string searchTerm, int? season, string episode)
+        private async Task<(IList<ReleaseInfo> Releases, HttpResponse Response)> PerformSearch(string searchTerm, int? season, string episode)
         {
             if (searchTerm.IsNullOrWhiteSpace())
             {
@@ -874,6 +880,7 @@ namespace NzbDrone.Core.Indexers.Definitions
 
             _logger.Debug("PerformSearch: {0} [Season: {1}, Episode: {2}]", searchTerm, season, episode);
             var releases = new List<ReleaseInfo>();
+            HttpResponse firstResponse = null;
 
             // Search query words. Consists of Series keywords that will be used for series search request,
             // and Episode keywords that will be used for episode filtering.
@@ -898,6 +905,7 @@ namespace NzbDrone.Core.Indexers.Definitions
                     .AddFormParameter("val", searchString);
 
                 var response = await GetResponse(requestBuilder);
+                firstResponse ??= response;
 
                 try
                 {
@@ -944,7 +952,7 @@ namespace NzbDrone.Core.Indexers.Definitions
             }
             while (--searchKeywords > 0);
 
-            return releases;
+            return (releases, firstResponse);
         }
 
         private List<JToken> ParseMatchingSeries(HttpResponse response, string searchString, IReadOnlyList<string> informativeTokens)
@@ -1035,7 +1043,7 @@ namespace NzbDrone.Core.Indexers.Definitions
             return releases;
         }
 
-        private async Task<IList<ReleaseInfo>> FetchNewReleases()
+        private async Task<(IList<ReleaseInfo> Releases, HttpResponse Response)> FetchNewReleases()
         {
             var url = BaseUrl + "/new";
             _logger.Debug("FetchNewReleases: " + url);
@@ -1060,7 +1068,7 @@ namespace NzbDrone.Core.Indexers.Definitions
                 releases.AddRange(await FetchEpisodeReleases(episodeUrl));
             }
 
-            return releases;
+            return (releases, response);
         }
 
         private async Task<List<ReleaseInfo>> FetchEpisodeReleases(string url)
