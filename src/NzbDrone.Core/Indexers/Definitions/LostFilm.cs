@@ -41,6 +41,15 @@ namespace NzbDrone.Core.Indexers.Definitions
         // Never forwarded as a real HTTP cookie - stripped out in BuildRequest.
         private const string CaptchaHostCookieKey = "__lf_captcha_host";
 
+        // LostFilm accepts each captcha once, but clearing Settings.Captcha after a login only
+        // changes this instance: the database keeps the used value (and the open settings form
+        // sends it back on Save), so a later re-login would resubmit it and fail with "Captcha is
+        // incorrect". Remember the last submitted captcha in the same durable store and never
+        // submit it twice. Never forwarded as a real HTTP cookie either.
+        private const string UsedCaptchaCookieKey = "__lf_captcha_used";
+
+        private const string CaptchaRequiredMessage = "LostFilm.tv requires a captcha. Open the indexer settings to fetch a new one.";
+
         // A hung/blackholed mirror candidate otherwise costs the full default dispatcher timeout
         // per mirror tried; cap both the per-probe wait and how many candidates get tried.
         private const int MaxMirrorCandidates = 3;
@@ -157,7 +166,8 @@ namespace NzbDrone.Core.Indexers.Definitions
         {
             _logger.Debug("Logging in to LostFilm.tv");
 
-            var captchaSubmitted = Settings.Captcha.IsNotNullOrWhiteSpace();
+            var captcha = GetUnusedCaptcha();
+            var captchaSubmitted = captcha.IsNotNullOrWhiteSpace();
             var loginBaseUrl = ResolveLoginBaseUrl(captchaSubmitted);
 
             if (!captchaSubmitted)
@@ -182,7 +192,7 @@ namespace NzbDrone.Core.Indexers.Definitions
             if (captchaSubmitted)
             {
                 requestBuilder.AddFormParameter("need_captcha", "1");
-                requestBuilder.AddFormParameter("captcha", Settings.Captcha);
+                requestBuilder.AddFormParameter("captcha", captcha);
             }
 
             var request = BuildRequest(requestBuilder);
@@ -196,8 +206,9 @@ namespace NzbDrone.Core.Indexers.Definitions
                 // A captcha is required but the one we hold is stale or missing entirely.
                 // Clear it so it is not reused and ask the user to fetch a fresh one.
                 Settings.Captcha = null;
+                RememberUsedCaptcha(captcha);
 
-                throw new IndexerAuthException("LostFilm.tv requires a captcha. Open the indexer settings to fetch a new one.");
+                throw new IndexerAuthException(CaptchaRequiredMessage);
             }
 
             // LostFilm returns {"error":N,"result":"ok"} on failure. Parse the code instead of
@@ -225,15 +236,31 @@ namespace NzbDrone.Core.Indexers.Definitions
                 // LostFilm captchas are single-use and bound to the login session, so a
                 // failed captcha can never succeed again. Clear it to stop the retry loop.
                 Settings.Captcha = null;
+                RememberUsedCaptcha(captcha);
 
                 // No captcha was even submitted, so "error":4 here cannot mean "you typed the
                 // wrong answer" - it means one is required, same as the need_captcha case above.
                 if (!captchaSubmitted)
                 {
-                    throw new IndexerAuthException("LostFilm.tv requires a captcha. Open the indexer settings to fetch a new one.");
+                    throw new IndexerAuthException(CaptchaRequiredMessage);
                 }
 
-                throw new IndexerAuthException("Captcha is incorrect");
+                // A rejected captcha is either a wrong answer or one that an earlier login already
+                // used without it being remembered: the login that tests a new indexer runs before
+                // the indexer has an id, so nothing can be stored for it, while the form saves the
+                // captcha. The password alone may still be accepted, so try that once.
+                _logger.Debug("LostFilm.tv: captcha rejected, retrying the login without it");
+
+                try
+                {
+                    await DoLogin();
+                }
+                catch (IndexerAuthException ex) when (ex.Message == CaptchaRequiredMessage)
+                {
+                    throw new IndexerAuthException("Captcha is incorrect or was already used. Open the indexer settings to fetch a new one.");
+                }
+
+                return;
             }
 
             if (errorCode == 3)
@@ -258,6 +285,14 @@ namespace NzbDrone.Core.Indexers.Definitions
             Settings.Captcha = null;
 
             var cookies = response.GetCookies();
+
+            // The login replaces the stored cookies; keep the used-captcha marker with them.
+            var usedCaptcha = captchaSubmitted ? captcha : GetUsedCaptcha();
+
+            if (usedCaptcha.IsNotNullOrWhiteSpace())
+            {
+                cookies[UsedCaptchaCookieKey] = usedCaptcha;
+            }
 
             // lf_session is a durable cookie (expires years out); keep it in the DB for as long
             // as the server says it is valid instead of forcing a re-login every 30 days.
@@ -300,6 +335,50 @@ namespace NzbDrone.Core.Indexers.Definitions
             }
 
             return loginBaseUrl ?? BaseUrl;
+        }
+
+        // The captcha from the settings, unless it is the one that was already submitted.
+        private string GetUnusedCaptcha()
+        {
+            var captcha = Settings.Captcha?.Trim();
+
+            if (captcha.IsNullOrWhiteSpace())
+            {
+                return null;
+            }
+
+            if (captcha == GetUsedCaptcha())
+            {
+                _logger.Debug("LostFilm.tv: the captcha in the settings was already used, logging in without it");
+
+                return null;
+            }
+
+            return captcha;
+        }
+
+        private string GetUsedCaptcha()
+        {
+            Cookies ??= LoadCookies();
+
+            return Cookies != null && Cookies.TryGetValue(UsedCaptchaCookieKey, out var usedCaptcha) ? usedCaptcha : null;
+        }
+
+        private void RememberUsedCaptcha(string captcha)
+        {
+            if (captcha.IsNullOrWhiteSpace())
+            {
+                return;
+            }
+
+            Cookies ??= LoadCookies() ?? new Dictionary<string, string>();
+            Cookies[UsedCaptchaCookieKey] = captcha;
+            PersistCookies(Cookies, _cookiesExpiration ?? DateTime.Now.AddDays(30));
+        }
+
+        private static bool IsInternalCookie(string key)
+        {
+            return key == CaptchaHostCookieKey || key == UsedCaptchaCookieKey;
         }
 
         private string GetPinnedCaptchaHost()
@@ -430,7 +509,7 @@ namespace NzbDrone.Core.Indexers.Definitions
                 foreach (var cookie in Cookies)
                 {
                     // Internal bookkeeping, never a real cookie for the server.
-                    if (cookie.Key == CaptchaHostCookieKey)
+                    if (IsInternalCookie(cookie.Key))
                     {
                         continue;
                     }
@@ -520,7 +599,7 @@ namespace NzbDrone.Core.Indexers.Definitions
 
                 if (Cookies != null)
                 {
-                    foreach (var cookie in Cookies)
+                    foreach (var cookie in Cookies.Where(c => !IsInternalCookie(c.Key)))
                     {
                         requestUsed.Cookies[cookie.Key] = cookie.Value;
                     }
