@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using System.Web;
 using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
+using FluentValidation;
 using FluentValidation.Results;
 using Newtonsoft.Json.Linq;
 using NLog;
@@ -175,7 +176,7 @@ namespace NzbDrone.Core.Indexers.Definitions
                 .Accept(HttpAccept.Html)
                 .AddFormParameter("act", "users")
                 .AddFormParameter("type", "login")
-                .AddFormParameter("mail", Settings.Username)
+                .AddFormParameter("mail", Settings.Email)
                 .AddFormParameter("pass", Settings.Password)
                 .AddFormParameter("rem", "1");
 
@@ -1697,9 +1698,38 @@ namespace NzbDrone.Core.Indexers.Definitions
         }
     }
 
-    public class LostFilmSettings : UserPassTorrentBaseSettings
+    public class LostFilmSettingsValidator : NoAuthSettingsValidator<LostFilmSettings>
     {
+        public LostFilmSettingsValidator()
+        {
+            RuleFor(c => c.Email).NotEmpty();
+            RuleFor(c => c.Password).NotEmpty();
+        }
+    }
+
+    public class LostFilmSettings : NoAuthTorrentBaseSettings
+    {
+        private static readonly LostFilmSettingsValidator Validator = new();
+
+        public LostFilmSettings()
+        {
+            Email = "";
+            Password = "";
+        }
+
+        // LostFilm logs in with the account's e-mail address, not a user name.
+        [FieldDefinition(2, Label = "Email", HelpText = "Site Email", Privacy = PrivacyLevel.UserName)]
+        public string Email { get; set; }
+
+        [FieldDefinition(3, Label = "Password", HelpText = "Site Password", Privacy = PrivacyLevel.Password, Type = FieldType.Password)]
+        public string Password { get; set; }
+
         [FieldDefinition(4, Label = "CAPTCHA", Type = FieldType.CardigannCaptcha, HelpText = "Enter the code from the captcha image")]
         public string Captcha { get; set; }
+
+        public override NzbDroneValidationResult Validate()
+        {
+            return new NzbDroneValidationResult(Validator.Validate(this));
+        }
     }
 }

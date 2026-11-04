@@ -82,7 +82,7 @@ namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
                 Settings = new LostFilmSettings
                 {
                     BaseUrl = BaseUrl,
-                    Username = Environment.GetEnvironmentVariable("LOSTFILM_USER") ?? "testuser",
+                    Email = Environment.GetEnvironmentVariable("LOSTFILM_USER") ?? "testuser@example.com",
                     Password = Environment.GetEnvironmentVariable("LOSTFILM_PASSWORD")
                 }
             };

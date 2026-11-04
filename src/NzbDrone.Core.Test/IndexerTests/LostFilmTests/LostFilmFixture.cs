@@ -33,7 +33,7 @@ namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
                 Settings = new LostFilmSettings
                 {
                     BaseUrl = BaseUrl,
-                    Username = "testuser",
+                    Email = "testuser@example.com",
                     Password = "testpass"
                 }
             };
@@ -129,6 +129,36 @@ namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
             attribute.Should().NotBeNull();
             attribute.Type.Should().Be(FieldType.CardigannCaptcha);
             attribute.Order.Should().Be(4);
+        }
+
+        [Test]
+        public void should_label_the_login_field_as_email()
+        {
+            // LostFilm logs in with the account's e-mail address, so the field must not say "Username".
+            var attribute = typeof(LostFilmSettings)
+                .GetProperty(nameof(LostFilmSettings.Email))
+                ?.GetCustomAttribute<FieldDefinitionAttribute>(false);
+
+            attribute.Should().NotBeNull();
+            attribute.Label.Should().Be("Email");
+            attribute.Order.Should().Be(2);
+            typeof(LostFilmSettings).GetProperty("Username").Should().BeNull();
+        }
+
+        [Test]
+        public void should_send_the_email_as_the_login_name()
+        {
+            const string anonPage = "<html><body><a href=\"/login\" class=\"link\">Вход</a></body></html>";
+            MockResponse(HttpMethod.Get, "/new", anonPage);
+            MockResponse(HttpMethod.Post, "/ajaxik.php", "{\"error\":3,\"result\":\"ok\"}", "application/json");
+
+            Subject.Test();
+
+            Mocker.GetMock<IIndexerHttpClient>().Verify(
+                o => o.ExecuteProxiedAsync(
+                    It.Is<HttpRequest>(v => v.Method == HttpMethod.Post && (v.GetContent() ?? string.Empty).Contains("type=login") && (v.GetContent() ?? string.Empty).Contains("mail=testuser%40example.com")),
+                    Subject.Definition),
+                Times.Once());
         }
 
         [Test]
