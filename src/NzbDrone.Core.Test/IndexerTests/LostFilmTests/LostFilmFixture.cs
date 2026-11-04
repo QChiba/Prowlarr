@@ -914,5 +914,32 @@ namespace NzbDrone.Core.Test.IndexerTests.LostFilmTests
             result.Releases.Should().NotBeEmpty();
             result.Releases.Should().OnlyContain(r => r.PublishDate > DateTime.Now.AddMinutes(-1));
         }
+
+        [TestCase("08.04.2022", 2022, 4, 8)]
+        [TestCase("29.09.2013", 2013, 9, 29)]
+        [TestCase("1.5.2020", 2020, 5, 1)]
+        [TestCase("17 декабря 2009", 2009, 12, 17)]
+        [TestCase("01 октября 2013", 2013, 10, 1)]
+        [TestCase(" 30 января 2025 ", 2025, 1, 30)]
+        [TestCase("29 Февраля 2024", 2024, 2, 29)]
+        public void should_parse_lostfilm_dates_without_russian_culture_data(string text, int year, int month, int day)
+        {
+            // Regression: dates were parsed with the ru-RU culture, which falls back to English
+            // formats when only English ICU data is installed (e.g. the linuxserver.io Alpine
+            // image), so "08.04.2022" became August 4th and month names fell back to now.
+            LostFilm.ParseRussianDate(text).Should().Be(new DateTime(year, month, day));
+        }
+
+        [TestCase(null)]
+        [TestCase("")]
+        [TestCase("TBA")]
+        [TestCase("31 февраля 2020")]
+        [TestCase("13.13.2020")]
+        [TestCase("17 december 2009")]
+        [TestCase("١٧ декабря 2009")]
+        public void should_not_parse_invalid_lostfilm_dates(string text)
+        {
+            LostFilm.ParseRussianDate(text).Should().BeNull();
+        }
     }
 }

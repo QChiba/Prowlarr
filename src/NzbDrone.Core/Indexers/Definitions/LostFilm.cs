@@ -62,7 +62,18 @@ namespace NzbDrone.Core.Indexers.Definitions
             (new Regex("1080 ", RegexOptions.Compiled | RegexOptions.IgnoreCase), "1080p "),
             (new Regex("720 ", RegexOptions.Compiled | RegexOptions.IgnoreCase), "720p ")
         };
-        private static readonly CultureInfo RuCulture = CultureInfo.GetCultureInfo("ru-RU");
+
+        // LostFilm dates are "dd.MM.yyyy" or "d MMMM yyyy" with a Russian month name in the
+        // genitive ("17 декабря 2009"). They are parsed without relying on the ru-RU culture:
+        // with only English ICU data installed (Alpine's icu-data-en, as in the linuxserver.io
+        // image) ru-RU falls back to English formats, so "08.04.2022" was read as August 4th
+        // and month names did not parse at all.
+        private static readonly string[] RussianMonthsGenitive =
+        {
+            "января", "февраля", "марта", "апреля", "мая", "июня",
+            "июля", "августа", "сентября", "октября", "ноября", "декабря"
+        };
+        private static readonly Regex RussianLongDateRegex = new(@"^(?<day>[0-9]{1,2})\s+(?<month>\p{L}+)\s+(?<year>[0-9]{4})$", RegexOptions.Compiled);
         private static readonly HashSet<string> SearchStopWords = new(StringComparer.OrdinalIgnoreCase)
         {
             "the", "a", "an", "of", "to", "and", "for", "in", "on", "with", "at", "by", "from", "is", "it", "or", "as", "be",
@@ -1100,9 +1111,9 @@ namespace NzbDrone.Core.Indexers.Definitions
                         date = parsedDate;
                     }
                 }
-                else if (DateTime.TryParse(dateString, RuCulture, DateTimeStyles.AssumeLocal, out var parsedDate))
+                else
                 {
-                    date = parsedDate;
+                    date = ParseRussianDate(dateString);
                 }
             }
 
@@ -1519,7 +1530,40 @@ namespace NzbDrone.Core.Indexers.Definitions
             }
 
             // dd.mm.yyyy
-            return DateTime.TryParse(dateString, RuCulture, DateTimeStyles.AssumeLocal, out var parsedDate) ? parsedDate : DateTime.Now;
+            return ParseRussianDate(dateString) ?? DateTime.Now;
+        }
+
+        internal static DateTime? ParseRussianDate(string dateString)
+        {
+            if (dateString.IsNullOrWhiteSpace())
+            {
+                return null;
+            }
+
+            dateString = dateString.Trim();
+
+            if (DateTime.TryParseExact(dateString, new[] { "dd.MM.yyyy", "d.M.yyyy" }, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var numericDate))
+            {
+                return numericDate;
+            }
+
+            var match = RussianLongDateRegex.Match(dateString);
+
+            if (!match.Success)
+            {
+                return null;
+            }
+
+            var day = int.Parse(match.Groups["day"].Value, CultureInfo.InvariantCulture);
+            var month = Array.FindIndex(RussianMonthsGenitive, m => m.Equals(match.Groups["month"].Value, StringComparison.OrdinalIgnoreCase)) + 1;
+            var year = int.Parse(match.Groups["year"].Value, CultureInfo.InvariantCulture);
+
+            if (month == 0 || year < 1 || day < 1 || day > DateTime.DaysInMonth(year, month))
+            {
+                return null;
+            }
+
+            return new DateTime(year, month, day, 0, 0, 0, DateTimeKind.Local);
         }
 
         private IndexerCapabilities SetCapabilities()
